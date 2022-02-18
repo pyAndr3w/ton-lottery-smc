@@ -1,0 +1,276 @@
+;; TON based scalable lottery smart-contract
+
+;;global variables
+global int loaded;
+global int seq_no;
+global int state;
+global int ed;
+global int rt;
+global int pp;
+global slice my_addr;
+global slice owner_addr;
+global int public_key;
+global cell sold_tickets;
+global cell winners;
+global cell game_config;
+global int TICKETS;
+global int PRICE;
+global slice PRIZES;
+
+;; text slices
+slice text::dev_fee() asm "<b 124 word Dev fee| $, b> <s PUSHSLICE";
+slice text::you_bought() asm "<b 124 word You bought | $, b> <s PUSHSLICE";
+slice text::tickets() asm "<b 124 word ticket(-s) for lottery | $, b> <s PUSHSLICE";
+slice text::pick_winners() asm "<b 124 word Picking the winners.| $, b> <s PUSHSLICE";
+slice text::you_won_the_lottery() asm "<b 124 word You won the lottery | $, b> <s PUSHSLICE";
+slice text::draw() asm "<b 124 word #| $, b> <s PUSHSLICE";
+slice text::give_out() asm "<b 124 word Give out prizes.| $, b> <s PUSHSLICE";
+
+
+() initialize_globals() impure {
+  ifnot (null?(loaded)) { return (); }
+  my_addr = my_address();
+  var ds = get_data().begin_parse();
+  seq_no = ds~load_uint(32);
+  state = ds~load_uint(8);
+  ed = ds~load_uint(32); ;; edition
+  rt = ds~load_uint(32); ;; remaining tickets
+  pp = ds~load_uint(32); ;; paid prizes
+  owner_addr = ds~load_msg_addr();
+  public_key = ds~load_uint(256);
+  sold_tickets = ds~load_dict();
+  winners = ds~load_dict();
+  game_config = ds~load_ref();
+  var gcs = game_config.begin_parse();
+  TICKETS = gcs~load_uint(32);
+  PRICE = gcs~load_uint(64);
+  PRIZES = gcs;
+  if (rt > TICKETS) { rt = TICKETS; }
+  loaded = true;
+}
+
+() store_data() impure {
+  set_data(begin_cell()
+    .store_uint(seq_no, 32)
+    .store_uint(state, 8)
+    .store_uint(ed, 32)
+    .store_uint(rt, 32)
+    .store_uint(pp, 32)
+    .store_slice(owner_addr)
+    .store_uint(public_key, 256)
+    .store_dict(sold_tickets)
+    .store_dict(winners)
+    .store_ref(game_config)
+    .end_cell());
+}
+
+() give_out_prizes() impure {
+  int x = 1;
+  int f = -1;
+  int k = pp;
+  do {
+    (k, var winner, f) = winners.udict_get_next?(32, k);
+    if (f) {
+      pp = k;
+      var w_addr = winner~load_msg_addr(); ;; winner addr
+      var pv = winner~load_uint(64); ;; prize value
+      var x = winner~load_uint(32); ;; win ticket number
+      var body = begin_cell()
+        .store_uint(0, 32)
+;;      .store_number(x, 0) ;; debug info
+;;      .store_uint(32, 8) ;; " "
+        .store_slice(text::you_won_the_lottery())
+        .store_slice(text::draw())
+        .store_number(ed, 0)
+        .end_cell();
+      send_money(w_addr, pv, body, 3);
+
+      var w_newcell = begin_cell()
+        .store_slice(w_addr)
+        .store_uint(pv, 64)
+        .store_uint(x, 32)
+        .store_int(-1, 1)
+        .end_cell();
+      winners = udict_set(winners, 32, k, w_newcell.begin_parse());
+    } else {
+      pp = 0;
+      state = 1;
+      ed += 1;
+      rt = TICKETS;
+    }
+    x = x + 1;
+  } until ((x > 50) | (~ f));
+
+  if (f) {
+    send_money(my_addr, 1000000000, null(), 3);
+  } else {
+    raw_reserve(1000000000, 0);
+    var body = begin_cell()
+      .store_uint(0, 32)
+      .store_slice(text::dev_fee())
+      .end_cell();
+    send_money(owner_addr, 0, body, 130);
+  }
+}
+
+() lottery_draw() impure {
+  slice prizes = PRIZES;
+  int last_k = 0;
+  int k = 0;
+  int i = 0;
+  int f = -1;
+  (i, var last_winner, f) = udict_get_max?(winners, 32);
+  if (f) {
+    last_winner~load_uint(3 + 8 + 256 + 64 + 16);
+    int paid = last_winner~load_int(1);
+    ifnot (paid) {
+      last_k = i;
+      k = i;
+    }
+  }
+  ifnot (last_k) { winners = new_dict(); }
+  f = -1;
+  int x = 50; ;; one-time prize draw limit
+  do {
+    (int pv, int pn) = (prizes~load_uint(64), prizes~load_uint(32)); ;; prize value, prize number
+    if (last_k < pn) {
+      pn -= last_k;
+      last_k = 0;
+      while ((pn > 0) & (x > 0)) {
+        k += 1;
+        randomize_lt();
+        int win_num = rand(TICKETS);
+        (i, slice addr, f) = udict_get_next?(sold_tickets, 32, win_num); ;; winner addr
+        ifnot (f) { (i, addr, f) = udict_get_preveq?(sold_tickets, 32, win_num); } ;; or this
+        var winner = begin_cell()
+          .store_slice(addr)
+          .store_uint(pv, 64)
+          .store_uint(i, 32)
+          .store_int(0, 1) ;; paid
+          .end_cell();
+        winners = udict_set(winners, 32, k, winner.begin_parse());
+        (var nd, _) = sold_tickets.udict_delete?(32, i);
+        sold_tickets = nd;
+        x -= 1;
+        pn -= 1;
+      }
+    } else { last_k -= pn; }
+    int e = slice_empty?(prizes);
+    if ((e) & (pn == 0)) {
+      sold_tickets = new_dict();
+      state = 3;
+    }
+  } until ((e) | (x == 0));
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_cell, slice in_msg) impure {
+  var cs = in_msg_cell.begin_parse();
+  var (flags, sender_addr) = (cs~load_uint(4), cs~load_msg_addr());
+
+  if (flags & 1) { return (); } ;; ignore all other bounced messages
+
+  initialize_globals();
+
+  ;; temp function :) while no boc generator for recv_external
+  if (slice_data_equal?(sender_addr, owner_addr) & (msg_value == 666000000)) {
+    send_money(owner_addr, 0, null(), 160);
+    return ();
+  }
+  
+  if ((slice_data_equal?(sender_addr, my_addr) | slice_data_equal?(sender_addr, owner_addr)) & (state == 3)) {
+    give_out_prizes();
+    store_data();
+    return ();
+  }
+  if ((slice_data_equal?(sender_addr, my_addr) | slice_data_equal?(sender_addr, owner_addr)) & (state == 2)) {
+    lottery_draw();
+    if (state == 2) { send_money(my_addr, 1000000000, null(), 3); }
+    if (state == 3) {
+      var body = begin_cell()
+        .store_uint(0, 32)
+        .store_slice(text::give_out())
+        .end_cell();
+      send_money(my_addr, 1000000000, body, 3);
+    }
+    store_data();
+    return ();
+  }
+  if ((msg_value >= PRICE) & (state == 1) & (rt > 0)) {
+    (int i, _, var f) = udict_get_max?(sold_tickets, 32);
+    int k = 1;
+    if (f) { k = k + i; }
+    int av = rt;
+    if rt > 100 { av = 100; }
+    (int bt, int ch) = divmod(msg_value, PRICE); ;; bought tickets, change
+    if bt > av {
+      ch += (bt - av) * PRICE;
+      bt = av;
+    }
+    int t = bt;
+    do {
+      sold_tickets = udict_set(sold_tickets, 32, k, sender_addr);
+      k += 1;
+      t -= 1;
+    } until (t < 1);
+    rt -= bt;
+    var body = begin_cell()
+      .store_uint(0, 32)
+      .store_slice(text::you_bought())
+      .store_number(bt, 0)
+      .store_slice(text::tickets())
+      .store_slice(text::draw())
+      .store_number(ed, 0)
+      .end_cell();
+    send_money(sender_addr, ch, body, 3);
+    if (rt == 0) {
+      state = 2;
+      var body = begin_cell()
+        .store_uint(0, 32)
+        .store_slice(text::pick_winners())
+        .end_cell();
+      send_money(my_addr, 1000000000, body, 3);
+    }
+    store_data();
+    return ();
+  }
+  throw_if(34, true); ;; bounce in other situations
+}
+
+;; op 0 - Inital deploy
+;; op 1 - Update code
+;; op 2 - Set owner
+;; op 666 - Self destruct
+;; Return codes
+;; 32 - Invalid signature
+;; 33 - Invalid seq_no
+() recv_external(slice in_msg) impure {
+  initialize_globals();
+  var signature = in_msg~load_bits(512);
+  var hash = slice_hash(in_msg);
+  throw_unless(32, check_signature(hash, signature, public_key));
+  var msg_seq_no = in_msg~load_uint(32);
+  throw_if(33, msg_seq_no != seq_no);
+  if (seq_no == 0) {
+    accept_message();
+  } else {
+    var op = in_msg~load_uint(32);
+    ;; Update code
+    if (op == 1) {
+      accept_message();
+      var code_cell = in_msg~load_ref();
+      set_code(code_cell);
+    }
+    ;; Set owner
+    if (op == 2) {
+      accept_message();
+      owner_addr = in_msg~load_msg_addr();
+    }
+    ;; Self destruct
+    if (op == 666) {
+      accept_message();
+      send_money(owner_addr, 0, null(), 128 + 32);
+    }
+  }
+  seq_no += 1;
+  store_data();
+}

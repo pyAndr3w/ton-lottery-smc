@@ -1,0 +1,33 @@
+"TonUtil.fif" include
+"Asm.fif" include
+
+
+"EQB9DjoKb6di-LGbXVWf5wq_jH5SE-lCx09fMcVmHQNtDqke" // owner address
+
+
+parse-smc-addr drop 2constant owner_addr
+"build/contract.pk" load-generate-keypair // generate key pair
+constant private_key  // save private to constant
+constant public_key // save public to constant
+
+
+<b // CONFIG
+  10 32 u, // number of tickets (now 10)
+  1000000000 64 u, // price of one ticket (now 1 TON)
+  // PRIZES (max 11 rows)
+  5000000000 64 u, 1 32 u, // 5 TON x1
+  3000000000 64 u, 1 32 u, // 3 TON x1
+b> constant config
+
+<b
+  0 32 u, // seq_no
+  1 8 u, // state
+  0 32 u, // edition
+  999999 32 u, // remaining tickets
+  0 32 u, // paid prizes
+  owner_addr Addr,
+  public_key B,
+  false 1 i, // empty dict
+  false 1 i, // empty dict
+  config ref, // config
+b>
