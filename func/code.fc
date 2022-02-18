@@ -219,6 +219,7 @@ slice text::give_out() asm "<b 124 word Give out prizes.| $, b> <s PUSHSLICE";
       .store_uint(0, 32)
       .store_slice(text::you_bought())
       .store_number(bt, 0)
+      .store_uint(32, 8) ;; " "
       .store_slice(text::tickets())
       .store_slice(text::draw())
       .store_number(ed, 0)
