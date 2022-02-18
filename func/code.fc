@@ -121,7 +121,9 @@ slice text::give_out() asm "<b 124 word Give out prizes.| $, b> <s PUSHSLICE";
   int f = -1;
   (i, var last_winner, f) = udict_get_max?(winners, 32);
   if (f) {
-    last_winner~load_uint(3 + 8 + 256 + 64 + 16);
+    last_winner~load_msg_addr();
+    last_winner~load_uint(64);
+    last_winner~load_uint(32);
     int paid = last_winner~load_int(1);
     ifnot (paid) {
       last_k = i;
